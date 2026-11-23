@@ -435,4 +435,25 @@ app.post('/webhooks/:provider', (req, res) => {
   if (txn.linkId) {
     const link = db.links.find(l => l.id === txn.linkId);
     if (link && txn.status === 'success') { link.status = 'paid'; link.paidAt = txn.paidAt; }
-    s
+    save();
+  }
+  save();
+  sseBroadcast(txn.linkId, { type: 'status', orderId: txn.orderId, status: txn.status });
+  res.json({ ok: true });
+});
+
+/* ------------------------------------------------------------------ */
+/* Public payment page                                                */
+/* ------------------------------------------------------------------ */
+
+app.get('/pay/:slug', (_req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'pay.html'));
+});
+
+/* ------------------------------------------------------------------ */
+/* Start server                                                       */
+/* ------------------------------------------------------------------ */
+
+app.listen(PORT, () => {
+  console.log(`[paynow] listening on http://localhost:${PORT} (DEMO_MODE=${DEMO_MODE})`);
+});
