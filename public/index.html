@@ -208,7 +208,7 @@
       <button class="tab active" data-mode="login" type="button">Log in</button>
       <button class="tab" data-mode="signup" type="button">Create account</button>
     </div>
-    <form id="auth-form" class="stack" novalidate>
+    <form id="auth-form" class="stack" novalidate onsubmit="return false">
       <div>
         <label for="email">Email</label>
         <input id="email" name="email" type="email" required placeholder="you@company.com" autocomplete="email">
@@ -296,7 +296,7 @@
       <div class="grid-2 builder">
         <div class="card">
           <h3 style="margin-bottom:20px">Create a payment link</h3>
-          <form id="link-form" class="stack">
+          <form id="link-form" class="stack" onsubmit="return false">
             <div>
               <label for="productName">Product / purpose</label>
               <input id="productName" name="productName" required placeholder="Consulting call">
@@ -373,7 +373,7 @@
           <span class="muted" style="font-size:13px">Secrets encrypted with AES-256-GCM</span>
         </div>
         <div class="gw-grid" id="gw-grid"></div>
-        <form id="gw-form" class="stack" hidden style="margin-top:20px;max-width:520px">
+        <form id="gw-form" class="stack" hidden style="margin-top:20px;max-width:520px" onsubmit="return false">
           <input type="hidden" name="provider">
           <div>
             <label for="gw-label">Connection label</label>
@@ -402,4 +402,418 @@
         <div class="card-head"><h3>Connected gateways</h3></div>
         <div class="gw-list" id="gw-list"></div>
       </div>
+    </section>
+
+    <!-- DEVELOPERS -->
+    <section class="view" data-view="developers" hidden>
+      <div class="card">
+        <div class="card-head"><h3>API keys</h3></div>
+        <p class="muted" style="font-size:13px;margin:0 0 16px">Use an API key to create payment links from your own server. Send it as a Bearer token. The full key is shown only once — copy it now.</p>
+        <form id="key-form" class="stack" style="max-width:520px" onsubmit="return false">
+          <div>
+            <label for="key-label">Key label</label>
+            <input id="key-label" name="label" required placeholder="Website checkout">
+          </div>
+          <div><button class="btn primary" type="submit">Create API key</button></div>
+        </form>
+        <div class="token-box" id="token-box" hidden>
+          <code id="token-value"></code>
+          <button class="btn ghost small" id="copy-token" type="button">Copy</button>
+        </div>
+        <div style="margin-top:20px" id="keys-list"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h3>Create a link via API</h3></div>
+        <div class="code">curl -X POST /api/links \
+  -H "Authorization: Bearer pk_live_..." \
+  -H "Content-Type: application/json" \
+  -d '{"amount": 1500, "productName": "Consulting call"}'</div>
+      </div>
+    </section>
+
+    <!-- MCP -->
+    <section class="view" data-view="mcp" hidden>
+      <div class="card">
+        <div class="card-head"><h3>MCP server</h3></div>
+        <p class="muted" style="font-size:13px;margin:0 0 16px">Connect Pay Now to an MCP client to create and check payment links from chat. Paste this into your MCP config and replace the key with a real API key from the Developers tab.</p>
+        <div class="code" id="mcp-config"></div>
+        <p class="legal">MCP support is a preview in this demo build.</p>
+      </div>
+    </section>
+  </main>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const $$ = s => Array.from(document.querySelectorAll(s));
+const money = p => new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format((p || 0) / 100);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const fmtTime = ts => new Date(ts).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+const dayName = ts => new Date(ts).toLocaleDateString('en-IN', { weekday: 'short' });
+
+async function jfetch(url, opts = {}) {
+  const res = await fetch(url, { headers: { 'Content-Type': 'application/json' }, ...opts });
+  let data = {};
+  try { data = await res.json(); } catch { /* empty */ }
+  if (!res.ok) throw new Error(data.error || 'Something went wrong');
+  return data;
+}
+
+function toast(msg) {
+  document.querySelectorAll('.toast').forEach(t => t.remove());
+  const t = document.createElement('div');
+  t.className = 'toast';
+  t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 2600);
+}
+
+async function copyText(v) {
+  try { await navigator.clipboard.writeText(v); }
+  catch {
+    const ta = document.createElement('textarea');
+    ta.value = v; document.body.appendChild(ta); ta.select();
+    document.execCommand('copy'); ta.remove();
+  }
+}
+
+let me = null;
+let mode = 'login';
+
+function setMode(m) {
+  mode = m;
+  $$('.tab').forEach(t => t.classList.toggle('active', t.dataset.mode === m));
+  const signup = m === 'signup';
+  $('#signup-fields').hidden = !signup;
+  $('#auth-title').textContent = signup ? 'Create your account' : 'Welcome back';
+  $('#auth-sub').textContent = signup ? 'Start accepting payments in minutes.' : 'Sign in to your merchant dashboard.';
+  $('#auth-submit').textContent = signup ? 'Create account' : 'Log in';
+  $('#auth-error').textContent = '';
+}
+
+function showAuth() {
+  $('#auth').hidden = false;
+  $('#app').hidden = true;
+}
+
+function showApp(user) {
+  me = user;
+  $('#password').value = '';
+  $('#auth').hidden = true;
+  $('#app').hidden = false;
+  $('#user-biz').textContent = user.businessName || 'Merchant';
+  $('#user-email').textContent = user.email || '';
+  $('#pv-biz').textContent = user.businessName || 'Your business';
+  loadAll();
+}
+
+function switchView(name) {
+  $$('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.view === name));
+  $$('.view').forEach(v => { v.hidden = v.dataset.view !== name; });
+  const titles = { overview: 'Overview', links: 'Payment Links', gateways: 'Gateways', developers: 'Developers', mcp: 'MCP' };
+  $('#page-title').textContent = titles[name] || 'Overview';
+}
+
+function loadAll() {
+  loadOverview();
+  loadLinks();
+  loadProviders();
+  loadGwList();
+  loadGatewaysIntoSelect();
+  loadKeys();
+}
+
+/* ---------------- Overview ---------------- */
+
+async function loadOverview() {
+  let txns = [];
+  try { const d = await jfetch('/api/transactions'); txns = d.transactions || []; }
+  catch { txns = []; }
+  const ok = txns.filter(t => t.status === 'success');
+  const startOfToday = new Date(); startOfToday.setHours(0, 0, 0, 0);
+  const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  const todaySum = ok.filter(t => t.createdAt >= startOfToday.getTime()).reduce((s, t) => s + t.amount, 0);
+  const weekSum = ok.filter(t => t.createdAt >= weekAgo).reduce((s, t) => s + t.amount, 0);
+  $('#stat-today').textContent = money(todaySum);
+  $('#stat-week').textContent = money(weekSum);
+  $('#stat-rate').textContent = txns.length ? Math.round(ok.length / txns.length * 100) + '%' : '0%';
+  $('#stat-aov').textContent = ok.length ? money(Math.round(ok.reduce((s, t) => s + t.amount, 0) / ok.length)) : '₹0';
+
+  const days = [];
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - i);
+    days.push({ start: d.getTime(), end: d.getTime() + 86400000, label: dayName(d.getTime()) });
+  }
+  const sums = days.map(dy => ok.filter(t => t.createdAt >= dy.start && t.createdAt < dy.end).reduce((s, t) => s + t.amount, 0));
+  const max = Math.max.apply(null, sums.concat([1]));
+  $('#bars').innerHTML = days.map((dy, i) =>
+    '<div class="bar-col"><div class="bar-wrap"><div class="bar" style="height:' + Math.max(4, Math.round(sums[i] / max * 100)) + '%"></div></div><span>' + dy.label + '</span></div>').join('');
+
+  const byProv = {};
+  ok.forEach(t => { byProv[t.provider || 'demo'] = (byProv[t.provider || 'demo'] || 0) + t.amount; });
+  const total = Object.values(byProv).reduce((a, b) => a + b, 0);
+  const colors = ['#0071e3', '#34a853', '#f9ab00', '#a142f4', '#ff6d01', '#00acc1'];
+  if (!total) {
+    $('#donut').style.background = '#eee';
+    $('#legend').innerHTML = '<span class="muted">No payments yet</span>';
+  } else {
+    let acc = 0;
+    const stops = Object.entries(byProv).map(function (kv, i) {
+      const from = acc / total * 360; acc += kv[1];
+      const to = acc / total * 360;
+      return colors[i % colors.length] + ' ' + from + 'deg ' + to + 'deg';
+    });
+    $('#donut').style.background = 'conic-gradient(' + stops.join(',') + ')';
+    $('#legend').innerHTML = Object.entries(byProv).map(function (kv, i) {
+      return '<div><span class="lname"><span class="dotc" style="background:' + colors[i % colors.length] + '"></span>' + esc(kv[0]) + '</span><strong>' + Math.round(kv[1] / total * 100) + '%</strong></div>';
+    }).join('');
+  }
+
+  const rows = txns.slice(0, 8);
+  $('#recent').innerHTML = rows.length ? rows.map(t =>
+    '<tr><td>' + esc(t.orderId || '—') + '</td><td>' + esc(t.product || '—') + '</td><td style="text-transform:capitalize">' + esc(t.provider || 'demo') + '</td><td>' + money(t.amount) + '</td><td><span class="pill ' + t.status + '">' + esc(t.status) + '</span></td><td>' + fmtTime(t.createdAt) + '</td></tr>').join('')
+    : '<tr><td colspan="6" class="empty">No activity yet — create a payment link to get started.</td></tr>';
+}
+
+$('#seed').addEventListener('click', async () => {
+  try {
+    const d = await jfetch('/api/seed', { method: 'POST' });
+    toast(d.seeded ? 'Demo data loaded.' : (d.note || 'Demo data already loaded.'));
+    loadOverview();
+  } catch (e) { toast(e.message); }
+});
+
+/* ---------------- Links ---------------- */
+
+async function loadLinks() {
+  let links = [];
+  try { const d = await jfetch('/api/links'); links = d.links || []; } catch { links = []; }
+  $('#links-body').innerHTML = links.length ? links.map(l => {
+    const toggle = l.status === 'paid' ? '' :
+      '<button class="btn ghost small" data-toggle="' + l.id + '" data-status="' + (l.status === 'active' ? 'disabled' : 'active') + '" type="button">' + (l.status === 'active' ? 'Disable' : 'Enable') + '</button>';
+    return '<tr><td>' + esc(l.productName) + '</td><td>' + money(l.amount) + '</td><td><span class="pill ' + l.status + '">' + esc(l.status) + '</span></td><td>' + fmtTime(l.createdAt) + '</td><td><div class="row-actions"><button class="btn ghost small" data-copy="' + esc(l.url) + '" type="button">Copy</button>' + toggle + '<a class="btn ghost small" href="' + esc(l.url) + '" target="_blank" rel="noopener">Open</a></div></td></tr>';
+  }).join('')
+    : '<tr><td colspan="5" class="empty">No payment links yet.</td></tr>';
+}
+
+$('#link-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  try {
+    const body = {
+      productName: $('#productName').value.trim(),
+      description: $('#description').value.trim(),
+      amount: Number($('#amount').value),
+      expiresIn: Number($('#expiresIn').value),
+      gatewayId: $('#link-gateway').value || null
+    };
+    const d = await jfetch('/api/links', { method: 'POST', body: JSON.stringify(body) });
+    $('#link-result').hidden = false;
+    $('#link-url').value = d.link.url;
+    $('#open-link').href = d.link.url;
+    toast('Payment link created.');
+    loadLinks();
+  } catch (err) { toast(err.message); }
+});
+
+$('#copy-link').addEventListener('click', async () => {
+  await copyText($('#link-url').value);
+  toast('Link copied.');
+});
+
+['productName', 'description', 'amount'].forEach(id => {
+  $('#' + id).addEventListener('input', () => {
+    $('#pv-title').textContent = $('#productName').value.trim() || 'Product name';
+    $('#pv-desc').textContent = $('#description').value.trim() || 'Description';
+    $('#pv-amount').textContent = money(Math.round(Number($('#amount').value || 0) * 100));
+  });
+});
+
+$$('.seg-btn').forEach(b => b.addEventListener('click', () => {
+  $$('.seg-btn').forEach(x => x.classList.toggle('active', x === b));
+  $('#preview').className = 'preview ' + b.dataset.preview;
+}));
+
+/* ---------------- Gateways ---------------- */
+
+async function loadProviders() {
+  let providers = [];
+  try { const d = await jfetch('/api/gateways/providers'); providers = d.providers || []; } catch { providers = []; }
+  $('#gw-grid').innerHTML = providers.map(p =>
+    '<div class="gw-card"><strong>' + esc(p.name) + (p.beta ? '<span class="badge">Beta</span>' : '') + '</strong><span class="muted">' + esc(p.blurb) + '</span><button class="btn ghost small" data-provider="' + esc(p.id) + '" type="button">Connect</button></div>').join('');
+}
+
+async function loadGwList() {
+  let list = [];
+  try { const d = await jfetch('/api/gateways'); list = d.gateways || []; } catch { list = []; }
+  $('#gw-list').innerHTML = list.length ? list.map(g =>
+    '<div class="gw-row"><div class="grow"><strong>' + esc(g.label) + ' <span class="pill ' + g.status + '">' + esc(g.status) + '</span></strong><small>' + esc(g.provider) + ' · ' + esc(g.keyId) + (g.upiVpa ? ' · ' + esc(g.upiVpa) : '') + '</small></div><button class="btn ghost small" data-test="' + g.id + '" type="button">Test</button><button class="btn ghost small danger" data-del-gw="' + g.id + '" type="button">Delete</button></div>').join('')
+    : '<div class="muted" style="padding:8px 0">No gateways connected yet.</div>';
+}
+
+async function loadGatewaysIntoSelect() {
+  let list = [];
+  try { const d = await jfetch('/api/gateways'); list = d.gateways || []; } catch { list = []; }
+  $('#link-gateway').innerHTML = '<option value="">Demo (no gateway)</option>' +
+    list.map(g => '<option value="' + esc(g.id) + '">' + esc(g.label) + ' — ' + esc(g.provider) + '</option>').join('');
+}
+
+$('#gw-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  try {
+    const body = {
+      provider: $('#gw-form').querySelector('[name=provider]').value,
+      label: $('#gw-label').value.trim(),
+      keyId: $('#gw-key').value.trim(),
+      secret: $('#gw-secret').value,
+      upiVpa: $('#gw-vpa').value.trim()
+    };
+    await jfetch('/api/gateways', { method: 'POST', body: JSON.stringify(body) });
+    $('#gw-form').hidden = true;
+    $('#gw-form').reset();
+    toast('Gateway connected.');
+    loadGwList(); loadGatewaysIntoSelect();
+  } catch (err) { toast(err.message); }
+});
+
+$('#gw-cancel').addEventListener('click', () => { $('#gw-form').hidden = true; $('#gw-form').reset(); });
+
+/* ---------------- API keys ---------------- */
+
+async function loadKeys() {
+  let keys = [];
+  try { const d = await jfetch('/api/keys'); keys = d.keys || []; } catch { keys = []; }
+  $('#keys-list').innerHTML = keys.length ? keys.map(k =>
+    '<div class="list-row"><div class="grow"><strong>' + esc(k.label) + '</strong><small>' + esc(k.prefix) + ' · ' + fmtTime(k.createdAt) + '</small></div><button class="btn ghost small danger" data-del-key="' + k.id + '" type="button">Delete</button></div>').join('')
+    : '<div class="muted" style="padding:8px 0">No API keys yet.</div>';
+}
+
+$('#key-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  try {
+    const d = await jfetch('/api/keys', { method: 'POST', body: JSON.stringify({ label: $('#key-label').value.trim() }) });
+    $('#token-box').hidden = false;
+    $('#token-value').textContent = d.token;
+    $('#key-form').reset();
+    toast('API key created — copy it now, it will not be shown again.');
+    loadKeys();
+  } catch (err) { toast(err.message); }
+});
+
+$('#copy-token').addEventListener('click', async () => {
+  await copyText($('#token-value').textContent);
+  toast('Token copied.');
+});
+
+/* ---------------- Shared click actions ---------------- */
+
+document.addEventListener('click', async e => {
+  const copyBtn = e.target.closest('[data-copy]');
+  if (copyBtn) { await copyText(copyBtn.dataset.copy); toast('Link copied.'); return; }
+  const tog = e.target.closest('[data-toggle]');
+  if (tog) {
+    try {
+      await jfetch('/api/links/' + tog.dataset.toggle, { method: 'PATCH', body: JSON.stringify({ status: tog.dataset.status }) });
+      toast('Link updated.');
+      loadLinks();
+    } catch (err) { toast(err.message); }
+    return;
+  }
+  const prov = e.target.closest('[data-provider]');
+  if (prov) {
+    $('#gw-form').hidden = false;
+    $('#gw-form').querySelector('[name=provider]').value = prov.dataset.provider;
+    $('#gw-label').focus();
+    return;
+  }
+  const tst = e.target.closest('[data-test]');
+  if (tst) {
+    try {
+      await jfetch('/api/gateways/' + tst.dataset.test + '/test', { method: 'POST' });
+      toast('Gateway test passed.');
+      loadGwList();
+    } catch (err) { toast(err.message); }
+    return;
+  }
+  const delGw = e.target.closest('[data-del-gw]');
+  if (delGw) {
+    if (!confirm('Delete this gateway?')) return;
+    try {
+      await jfetch('/api/gateways/' + delGw.dataset.delGw, { method: 'DELETE' });
+      toast('Gateway deleted.');
+      loadGwList(); loadGatewaysIntoSelect();
+    } catch (err) { toast(err.message); }
+    return;
+  }
+  const delKey = e.target.closest('[data-del-key]');
+  if (delKey) {
+    if (!confirm('Delete this API key?')) return;
+    try {
+      await jfetch('/api/keys/' + delKey.dataset.delKey, { method: 'DELETE' });
+      toast('API key deleted.');
+      loadKeys();
+    } catch (err) { toast(err.message); }
+  }
+});
+
+/* ---------------- Auth + nav ---------------- */
+
+$$('.tab').forEach(t => t.addEventListener('click', () => setMode(t.dataset.mode)));
+
+$('#auth-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const btn = $('#auth-submit');
+  btn.disabled = true;
+  $('#auth-error').textContent = '';
+  try {
+    const body = { email: $('#email').value.trim(), password: $('#password').value };
+    if (mode === 'signup') {
+      body.businessName = $('#businessName').value.trim();
+      body.pan = $('#pan').value.trim().toUpperCase();
+    }
+    const d = await jfetch(mode === 'signup' ? '/api/auth/signup' : '/api/auth/login', {
+      method: 'POST', body: JSON.stringify(body)
+    });
+    showApp(d.user);
+  } catch (err) {
+    $('#auth-error').textContent = err.message;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$('#logout').addEventListener('click', async () => {
+  try { await jfetch('/api/auth/logout', { method: 'POST' }); } catch { /* ignore */ }
+  me = null;
+  showAuth();
+});
+
+$$('.nav-item').forEach(n => n.addEventListener('click', () => switchView(n.dataset.view)));
+$('#new-link').addEventListener('click', () => switchView('links'));
+
+/* ---------------- Init ---------------- */
+
+$('#mcp-config').textContent = JSON.stringify({
+  mcpServers: {
+    paynow: {
+      command: 'npx',
+      args: ['-y', 'paynow-mcp'],
+      env: { PAYNOW_URL: location.origin, PAYNOW_API_KEY: 'pk_live_...' }
+    }
+  }
+}, null, 2);
+
+setMode('login');
+switchView('overview');
+(async () => {
+  try {
+    const d = await jfetch('/api/me');
+    showApp(d.user);
+  } catch {
+    showAuth();
+  }
+})();
+</script>
+</body>
+</html>
    

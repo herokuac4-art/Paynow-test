@@ -156,6 +156,11 @@ function apiKeyAuth(req, res, next) {
   req.apiKey = key;
   next();
 }
+function authEither(req, res, next) {
+  const uid = readSession(cookies(req).sid);
+  if (uid && db.users.some(u => u.id === uid)) { req.userId = uid; return next(); }
+  return apiKeyAuth(req, res, next);
+}
 
 /* ------------------------------------------------------------------ */
 /* Auth routes                                                        */
@@ -262,13 +267,13 @@ function expireIfNeeded(link) {
   if (link.status === 'active' && link.expiresAt < now()) { link.status = 'expired'; save(); }
 }
 
-app.get('/api/links', auth, (req, res) => {
+app.get('/api/links', authEither, (req, res) => {
   const list = db.links.filter(l => l.userId === req.userId).map(l => { expireIfNeeded(l); return decorateLink(req, l); });
   list.sort((a, b) => b.createdAt - a.createdAt);
   res.json({ links: list });
 });
 
-app.post('/api/links', auth, (req, res) => {
+app.post('/api/links', authEither, (req, res) => {
   const { amount, productName, description, gatewayId, expiresIn } = req.body || {};
   const paise = Math.round(Number(amount) * 100);
   if (!Number.isFinite(paise) || paise < 100 || paise > 100_000_000) return res.status(400).json({ error: 'Amount must be between ₹1 and ₹1,000,000.' });
@@ -297,6 +302,69 @@ app.patch('/api/links/:id', auth, (req, res) => {
   if (link.status === 'paid') return res.status(409).json({ error: 'Paid links cannot be changed.' });
   link.status = status; save();
   res.json({ link: decorateLink(req, link) });
+});
+
+/* ------------------------------------------------------------------ */
+/* Transactions + demo data                                           */
+/* ------------------------------------------------------------------ */
+
+app.get('/api/transactions', authEither, (req, res) => {
+  const list = db.transactions.filter(t => t.userId === req.userId);
+  list.sort((a, b) => b.createdAt - a.createdAt);
+  res.json({ transactions: list });
+});
+
+// DEMO ONLY: fills the dashboard with sample transactions so the
+// Overview charts have something to show. Disabled in production.
+app.post('/api/seed', auth, (req, res) => {
+  if (!DEMO_MODE) return res.status(403).json({ error: 'Demo data disabled.' });
+  if (db.transactions.some(t => t.userId === req.userId)) return res.json({ ok: true, seeded: 0, note: 'Demo data already loaded.' });
+  const providers = ['razorpay', 'razorpay', 'paytm', 'phonepe', 'razorpay', 'bharatpe', 'paytm'];
+  const products = ['Consulting call', 'Design pack', 'E-book', 'Workshop ticket', 'Logo design', 'Monthly plan', 'Course access'];
+  const amounts = [150000, 49900, 29900, 99900, 250000, 199900, 79900];
+  const day = 24 * 60 * 60 * 1000;
+  for (let i = 0; i < 7; i++) {
+    const ok = i !== 4;
+    db.transactions.push({
+      id: id(), userId: req.userId, linkId: null, gatewayId: null,
+      provider: providers[i], orderId: 'ord_demo' + (i + 1), amount: amounts[i],
+      product: products[i], status: ok ? 'success' : 'failed', method: 'upi',
+      createdAt: now() - i * day - 3600000 * (i + 1), paidAt: ok ? now() - i * day : null
+    });
+  }
+  save();
+  res.json({ ok: true, seeded: 7 });
+});
+
+/* ------------------------------------------------------------------ */
+/* API keys (Developers)                                              */
+/* ------------------------------------------------------------------ */
+
+app.get('/api/keys', auth, (req, res) => {
+  const list = db.apiKeys.filter(k => k.userId === req.userId).map(k => ({
+    id: k.id, label: k.label, prefix: k.prefix, createdAt: k.createdAt
+  }));
+  res.json({ keys: list });
+});
+
+app.post('/api/keys', auth, (req, res) => {
+  const { label } = req.body || {};
+  if (!label || String(label).trim().length < 2) return res.status(400).json({ error: 'Key label is required.' });
+  const token = 'pk_live_' + crypto.randomBytes(24).toString('hex');
+  const key = {
+    id: id(), userId: req.userId, label: String(label).trim(),
+    hash: crypto.createHash('sha256').update(token).digest('hex'),
+    prefix: token.slice(0, 14) + '…', createdAt: now()
+  };
+  db.apiKeys.push(key); save();
+  res.json({ key: { id: key.id, label: key.label, prefix: key.prefix, createdAt: key.createdAt }, token });
+});
+
+app.delete('/api/keys/:id', auth, (req, res) => {
+  const i = db.apiKeys.findIndex(k => k.id === req.params.id && k.userId === req.userId);
+  if (i === -1) return res.status(404).json({ error: 'API key not found.' });
+  db.apiKeys.splice(i, 1); save();
+  res.json({ ok: true });
 });
 
 /* ------------------------------------------------------------------ */
